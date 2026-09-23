@@ -237,10 +237,31 @@ async function resolveAndFetch (
     )
 
     updated = pkgId !== resolveResult.id || !resolution || forceFetch
+    const previousIntegrity = (options.currentPkg?.resolution as TarballResolution | undefined)?.integrity
     resolution = resolveResult.resolution
     pkgId = resolveResult.id
     normalizedBareSpecifier = resolveResult.normalizedBareSpecifier
     alias = resolveResult.alias
+
+    // URL/tarball resolvers don't return an integrity, because it is only
+    // known once the tarball has been downloaded. When the package is reused
+    // from the lockfile without being re-fetched, the freshly resolved
+    // resolution carries none, so carry the recorded one over instead of
+    // dropping it — an entry that loses its integrity can no longer be
+    // verified on the next install.
+    // https://github.com/pnpm/pnpm/issues/12001
+    const resolvedTarball = resolution as TarballResolution
+    if (
+      !updated &&
+      typeof previousIntegrity === 'string' &&
+      resolvedTarball.type == null &&
+      !resolvedTarball.integrity
+    ) {
+      resolution = {
+        ...resolution,
+        integrity: previousIntegrity,
+      } as Resolution
+    }
   }
 
   const id = pkgId!
@@ -316,17 +337,23 @@ async function resolveAndFetch (
     supportedArchitectures: options.supportedArchitectures,
   })
 
-  // A git host generates the tarball on the fly and publishes no checksum for
-  // it, so the only moment its integrity can be learned is right after the
-  // download. Pinning it on the resolution puts it in the lockfile, and every
-  // later install sends it back down to the fetcher, which rejects a tarball
-  // that doesn't match it.
-  const isGitHostedWithoutIntegrity = (resolution as TarballResolution).gitHosted === true &&
-    !(resolution as TarballResolution).integrity
-  if (!manifest || isGitHostedWithoutIntegrity) {
+  // Nothing publishes a checksum for a tarball that is not a registry
+  // package: a git host generates its tarball on the fly, and a bare tarball
+  // URL is resolved without ever reading a metadata document. The only moment
+  // their integrity can be learned is right after the download. Pinning it on
+  // the resolution puts it in the lockfile, and every later install sends it
+  // back down to the fetcher, which rejects a tarball that doesn't match it.
+  // Without the pin the lockfile entry stays unverifiable — which is exactly
+  // what `pkgSnapshotToResolution` now refuses to install.
+  const tarballResolution = resolution as TarballResolution
+  const needsIntegrityPin = tarballResolution.type == null &&
+    !tarballResolution.integrity &&
+    tarballResolution.tarball != null &&
+    !tarballResolution.tarball.startsWith('file:')
+  if (!manifest || needsIntegrityPin) {
     const fetched = await fetchResult.fetching()
     manifest = manifest ?? fetched.bundledManifest
-    if (isGitHostedWithoutIntegrity && fetched.tarballIntegrity != null) {
+    if (needsIntegrityPin && fetched.tarballIntegrity != null) {
       resolution = {
         ...resolution,
         integrity: fetched.tarballIntegrity,

@@ -164,6 +164,59 @@ test('request package but skip fetching, when resolution is already available', 
   expect(pkgResponse.fetching).toBeFalsy()
 })
 
+// https://github.com/pnpm/pnpm/issues/12001
+test('the integrity of a tarball dependency is preserved when the resolver returns none', async () => {
+  const storeDir = tempy.directory()
+  const cafs = createCafsStore(storeDir)
+  const projectDir = tempy.directory()
+
+  const tarball = `http://localhost:${REGISTRY_MOCK_PORT}/is-positive/-/is-positive-1.0.0.tgz`
+  const integrity = 'sha512-xxzPGZ4P2uN6rROUa5N9Z7zTX6ERuE0hs6GUOc/cKBLF2NqKc16UwqHMt3tFg4CO6EBTE5UecUasg+3jZx3Ckg=='
+
+  // Mimics @pnpm/tarball-resolver: a URL resolver cannot know the integrity,
+  // it is only computed once the tarball has been downloaded.
+  const resolveWithoutIntegrity = (async () => ({
+    id: tarball as PkgResolutionId,
+    normalizedBareSpecifier: tarball,
+    resolution: { tarball },
+    resolvedVia: 'url',
+    manifest: {
+      name: 'is-positive',
+      version: '1.0.0',
+    },
+  })) as typeof resolve
+
+  const requestPackage = createPackageRequester({
+    resolve: resolveWithoutIntegrity,
+    fetchers,
+    cafs,
+    storeDir,
+    verifyStoreIntegrity: true,
+    virtualStoreDirMaxLength: 120,
+  })
+
+  // The package is already in the lockfile (currentPkg) with its integrity and
+  // is not re-fetched (skipFetch), so the integrity has to be carried over
+  // from the current package instead of being dropped.
+  const pkgResponse = await requestPackage({ alias: 'is-positive', bareSpecifier: tarball }, {
+    currentPkg: {
+      id: tarball as PkgResolutionId,
+      resolution: { tarball, integrity },
+    },
+    downloadPriority: 0,
+    lockfileDir: projectDir,
+    preferredVersions: {},
+    projectDir,
+    skipFetch: true,
+    update: false,
+  }) as PackageResponse & { body: { updated: boolean } }
+
+  expect(pkgResponse.body.updated).toBe(false)
+  // Dropping the integrity here writes a lockfile entry that cannot be
+  // verified — and that pnpm now refuses to install.
+  expect(pkgResponse.body.resolution).toStrictEqual({ tarball, integrity })
+})
+
 test('refetch local tarball if its integrity has changed', async () => {
   const projectDir = tempy.directory()
   const tarballPath = path.join(projectDir, 'tarball.tgz')

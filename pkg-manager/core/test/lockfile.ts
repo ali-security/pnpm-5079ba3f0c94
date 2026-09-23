@@ -173,6 +173,7 @@ test('current lockfile removed when no deps in package.json', async () => {
     packages: {
       'is-negative@2.1.0': {
         resolution: {
+          integrity: getIntegrity('is-negative', '2.1.0'),
           tarball: `http://localhost:${REGISTRY_MOCK_PORT}/is-negative/-/is-negative-2.1.0.tgz`,
         },
       },
@@ -212,6 +213,7 @@ test('lockfile is fixed when it does not match package.json', async () => {
       },
       'is-negative@2.1.0': {
         resolution: {
+          integrity: getIntegrity('is-negative', '2.1.0'),
           tarball: `http://localhost:${REGISTRY_MOCK_PORT}/is-negative/-/is-negative-2.1.0.tgz`,
         },
       },
@@ -274,6 +276,7 @@ test(`doing named installation when ${WANTED_LOCKFILE} exists already`, async ()
       },
       'is-negative@2.1.0': {
         resolution: {
+          integrity: getIntegrity('is-negative', '2.1.0'),
           tarball: `http://localhost:${REGISTRY_MOCK_PORT}/is-negative/-/is-negative-2.1.0.tgz`,
         },
       },
@@ -787,6 +790,10 @@ test('packages installed via tarball URL from the default registry are normalize
       'is-positive@https://registry.npmjs.org/is-positive/-/is-positive-1.0.0.tgz': {
         engines: { node: '>=0.10.0' },
         resolution: {
+          // A bare tarball URL carries no checksum of its own, so the one
+          // computed from the downloaded bytes is pinned here. Without it the
+          // entry could not be verified on any later install.
+          integrity: expect.stringMatching(/^sha512-/) as unknown as string,
           tarball: 'https://registry.npmjs.org/is-positive/-/is-positive-1.0.0.tgz',
         },
         version: '1.0.0',
@@ -927,6 +934,7 @@ test(`doing named installation when shared ${WANTED_LOCKFILE} exists already`, a
     packages: {
       'is-negative@2.1.0': {
         resolution: {
+          integrity: getIntegrity('is-negative', '2.1.0'),
           tarball: `http://localhost:${REGISTRY_MOCK_PORT}/is-negative/-/is-negative-2.1.0.tgz`,
         },
       },
@@ -1168,6 +1176,10 @@ test('tarball installed through non-standard URL endpoint from the registry doma
       'is-positive@https://registry.npmjs.org/is-positive/download/is-positive-3.1.0.tgz': {
         engines: { node: '>=0.10.0' },
         resolution: {
+          // A bare tarball URL carries no checksum of its own, so the one
+          // computed from the downloaded bytes is pinned here. Without it the
+          // entry could not be verified on any later install.
+          integrity: 'sha512-8ND1j3y9/HP94TOvGzr69/FgbkX2ruOldhLEsTWwcJVfo4oRjwemJmJxt7RJkKYH8tz7vYBP9JcKQY8CLuJ90Q==',
           tarball: 'https://registry.npmjs.org/is-positive/download/is-positive-3.1.0.tgz',
         },
         version: '3.1.0',
