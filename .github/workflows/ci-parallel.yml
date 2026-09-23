@@ -1,0 +1,149 @@
+name: CI (parallel)
+
+# Like CI, but instead of running every package's test suite serially on one
+# runner, this fans out: one GitHub runner per workspace package. A `discover`
+# job builds the matrix (all packages that have a `_test` script) and the
+# `test` job runs each package's suite on its own runner, in parallel.
+#
+# Trigger manually from the Actions tab (workflow_dispatch).
+
+on:
+  workflow_dispatch:
+    inputs:
+      node-version:
+        description: "Node.js version to test on"
+        required: false
+        default: "22.12.0"
+      test-filter:
+        description: >-
+          Optional space-separated list of workspace packages to test instead of
+          every package. An entry may carry a jest test-path pattern after a
+          colon, e.g. "@pnpm/git-fetcher @pnpm/core:install/(fromRepo|lifecycleScripts)".
+          Leave empty to test every package that has a `_test` script.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      packages: ${{ steps.list.outputs.packages }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Build package matrix (packages with a _test script)
+        id: list
+        env:
+          TEST_FILTER: ${{ github.event.inputs.test-filter }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A non-empty `test-filter` replaces the discovered matrix with exactly
+          # the entries it names. Each entry is `<package>` or
+          # `<package>:<jest-test-path-pattern>`; the pattern half is carried
+          # through the matrix and split apart again by the test job.
+          if [ -n "${TEST_FILTER:-}" ] && [ -n "$(printf '%s' "${TEST_FILTER:-}" | tr -d '[:space:]')" ]; then
+            packages=$(node -e '
+              const entries = process.argv[1].split(/\s+/).filter(Boolean)
+              process.stdout.write(JSON.stringify(entries))
+            ' "$TEST_FILTER")
+            count=$(node -e "process.stdout.write(String(JSON.parse(process.argv[1]).length))" "$packages")
+            echo "packages=$packages" >> "$GITHUB_OUTPUT"
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+            echo "Filtered to $count package(s) from test-filter: $TEST_FILTER"
+            exit 0
+          fi
+          packages=$(git ls-files | grep -E '(^|/)package\.json$' | node -e '
+            const fs = require("fs")
+            let s = ""
+            process.stdin.on("data", d => s += d).on("end", () => {
+              const files = s.split("\n").filter(Boolean)
+              const names = new Set()
+              for (const f of files) {
+                if (f.includes("node_modules")) continue
+                try {
+                  const pj = JSON.parse(fs.readFileSync(f, "utf8"))
+                  if (pj.name && pj.scripts && pj.scripts._test) names.add(pj.name)
+                } catch {}
+              }
+              process.stdout.write(JSON.stringify([...names].sort()))
+            })
+          ')
+          count=$(node -e "process.stdout.write(String(JSON.parse(process.argv[1]).length))" "$packages")
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Discovered $count packages with a _test script"
+
+  test:
+    needs: discover
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # GitHub caps a matrix at 256 jobs; there are well under that.
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        package: ${{ fromJson(needs.discover.outputs.packages) }}
+    name: ${{ matrix.package }} (${{ matrix.os }})
+    steps:
+      - name: Configure Git
+        run: |
+          git config --global core.autocrlf false
+          git config --global user.name "xyz"
+          git config --global user.email "x@y.z"
+      - name: Checkout Commit
+        uses: actions/checkout@v5
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4.2.0
+        with:
+          standalone: true
+      - name: Setup Node
+        shell: bash
+        timeout-minutes: 25
+        run: |
+          ver="${{ github.event.inputs.node-version || '22.12.0' }}"
+          for i in 1 2 3 4 5; do
+            if pnpm env use -g "$ver"; then exit 0; fi
+            echo "pnpm env use -g $ver failed (attempt $i), retrying in 30s"
+            sleep 30
+          done
+          echo "pnpm env use -g $ver failed after 5 attempts"
+          exit 1
+      - name: Install npm@8
+        shell: bash
+        run: pnpm add --global npm@8
+        timeout-minutes: 10
+      - name: pnpm install
+        shell: bash
+        run: pnpm install
+        timeout-minutes: 10
+      - name: Compile + prepare fixtures
+        # Mirrors `pretest`: builds every package's lib/ (the package under test
+        # imports its workspace deps' compiled output) and prepares fixtures.
+        shell: bash
+        run: pnpm run pretest
+        timeout-minutes: 30
+      - name: Run ${{ matrix.package }} test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A matrix entry is `<package>` or `<package>:<jest-test-path-pattern>`.
+          # Without a pattern the package's whole suite runs, exactly as before.
+          pkg="${MATRIX_ENTRY%%:*}"
+          pattern="${MATRIX_ENTRY#*:}"
+          if [ "$pattern" = "$MATRIX_ENTRY" ] || [ -z "$pattern" ]; then
+            echo "Running the full test suite of $pkg"
+            pnpm --filter="$pkg" run _test
+          else
+            echo "Running tests of $pkg matching /$pattern/"
+            pnpm --filter="$pkg" run _test "$pattern"
+          fi
+        timeout-minutes: 30
+        env:
+          MATRIX_ENTRY: ${{ matrix.package }}
+          PNPM_WORKERS: 3
