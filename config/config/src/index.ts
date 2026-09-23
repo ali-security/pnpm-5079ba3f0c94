@@ -20,6 +20,7 @@ import pathAbsolute from 'path-absolute'
 import which from 'which'
 import { inheritAuthConfig } from './auth.js'
 import { checkGlobalBinDir } from './checkGlobalBinDir.js'
+import { dropUntrustedEnvExpansions } from './dropUntrustedEnvExpansions.js'
 import { rescopeUnscopedCreds } from './rescopeUnscopedCreds.js'
 import { hasDependencyBuildOptions, extractAndRemoveDependencyBuildOptions } from './dependencyBuildOptions.js'
 import { getNetworkConfigs } from './getNetworkConfigs.js'
@@ -221,6 +222,19 @@ export async function getConfig (opts: {
   const warnings: string[] = []
   rescopeUnscopedCreds(cliOptions, '<command line>', warnings)
 
+  // The project and workspace .npmrc files are repository-controlled, so they
+  // must not be able to choose which files pnpm loads as its TRUSTED user and
+  // global config. Left to the plain npm-conf precedence they could: a
+  // `userconfig=`/`globalconfig=` line in a cloned repository's .npmrc would
+  // outrank the built-in default and point pnpm at an attacker-supplied file,
+  // which pnpm would then load as a trusted source — one that keeps full
+  // `${...}` env expansion in registry/proxy URLs and credentials, and may set
+  // `tokenHelper`. Resolve both destinations up front from trusted config only
+  // (CLI options, `npm_config_*` env config, the built-in defaults) and pin
+  // them on the CLI layer, which outranks every .npmrc source.
+  cliOptions['userconfig'] ??= getProcessEnv('npm_config_userconfig') ?? npmDefaults.userconfig
+  cliOptions['globalconfig'] ??= getProcessEnv('npm_config_globalconfig') ?? npmDefaults.globalconfig
+
   const { config: npmConfig, warnings: npmConfWarnings, failedToLoadBuiltInConfig } = loadNpmConf(cliOptions, rcOptionsTypes, defaultOptions)
   warnings.push(...npmConfWarnings)
 
@@ -236,6 +250,20 @@ export async function getConfig (opts: {
   {
     const warn = npmConfig.addFile(path.resolve(path.join(__dirname, 'pnpmrc')), 'pnpm-builtin')
     if (warn) warnings.push(warn)
+  }
+
+  // The project and workspace .npmrc files are repository-controlled, so
+  // they must not be able to expand environment variables into request
+  // destinations (registry/proxy URLs, URL-scoped keys) or registry
+  // credential values. Settings whose raw form uses a ${...} placeholder in
+  // such a position are dropped from the source before the merged config is
+  // built. Trusted sources (cli, env, user, global, builtin) keep full env
+  // expansion.
+  for (const [name, sourceEntry] of Object.entries(npmConfig.sources)) {
+    if (name !== 'project' && name !== 'workspace') continue
+    const { path: filePath, data } = sourceEntry as { path?: string, data?: Record<string, unknown> }
+    if (filePath == null || data == null) continue
+    dropUntrustedEnvExpansions(data, filePath, warnings)
   }
 
   // After every source (cli, env, project, workspace, user, global,
