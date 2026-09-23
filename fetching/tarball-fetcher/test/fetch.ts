@@ -444,11 +444,44 @@ test('fail when preparing a git-hosted package', async () => {
 
   await expect(
     fetch.gitHostedTarball(cafs, resolution, {
+      allowBuild: (pkgName) => pkgName === '@pnpm.e2e/prepare-script-fails',
       filesIndexFile,
       lockfileDir: process.cwd(),
       pkg,
     })
   ).rejects.toThrow('Failed to prepare git-hosted package fetched from "https://codeload.github.com/pnpm-e2e/prepare-script-fails/tar.gz/ba58874aae1210a777eb309dd01a9fdacc7e54e7": @pnpm.e2e/prepare-script-fails@1.0.0 npm-install: `npm install`')
+})
+
+test('block a git-hosted package with a prepare script, when it is not allowed to be built', async () => {
+  process.chdir(tempy.directory())
+
+  const tarball = 'https://codeload.github.com/pnpm-e2e/prepare-script-works/tar.gz/55416a9c468806a935636c0ad0371a14a64df8c9'
+  const resolution = { tarball }
+
+  await expect(
+    fetch.gitHostedTarball(cafs, resolution, {
+      // no allowBuild is passed, so the package is not in the allowlist
+      filesIndexFile,
+      lockfileDir: process.cwd(),
+      pkg,
+    })
+  ).rejects.toThrow('The git-hosted package "@pnpm.e2e/prepare-script-works@1.0.0" needs to execute build scripts but is not in the "onlyBuiltDependencies" allowlist')
+})
+
+test('allow a git-hosted package with a prepare script, when it is in the allowlist', async () => {
+  process.chdir(tempy.directory())
+
+  const tarball = 'https://codeload.github.com/pnpm-e2e/prepare-script-works/tar.gz/55416a9c468806a935636c0ad0371a14a64df8c9'
+  const resolution = { tarball }
+
+  const { filesIndex } = await fetch.gitHostedTarball(cafs, resolution, {
+    allowBuild: (pkgName) => pkgName === '@pnpm.e2e/prepare-script-works',
+    filesIndexFile,
+    lockfileDir: process.cwd(),
+    pkg,
+  })
+
+  expect(filesIndex).toHaveProperty(['package.json'])
 })
 
 test('take only the files included in the package, when fetching a git-hosted package', async () => {

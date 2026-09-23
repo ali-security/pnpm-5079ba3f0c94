@@ -314,12 +314,19 @@ test('should not update when adding unrelated dependency', async () => {
 test('git-hosted repository is not added to the store if it fails to be built', async () => {
   prepareEmpty()
 
+  // The package has to be allowed to run its build scripts, otherwise the
+  // installation would fail before the build is even attempted.
+  const opts = () => testDefaults({
+    onlyBuiltDependencies: ['@pnpm.e2e/prepare-script-fails'],
+    neverBuiltDependencies: undefined,
+  })
+
   await expect(
-    addDependenciesToPackage({}, ['pnpm-e2e/prepare-script-fails'], testDefaults())
+    addDependenciesToPackage({}, ['pnpm-e2e/prepare-script-fails'], opts())
   ).rejects.toThrow()
 
   await expect(
-    addDependenciesToPackage({}, ['pnpm-e2e/prepare-script-fails'], testDefaults())
+    addDependenciesToPackage({}, ['pnpm-e2e/prepare-script-fails'], opts())
   ).rejects.toThrow()
 })
 

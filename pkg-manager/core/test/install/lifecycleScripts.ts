@@ -308,7 +308,11 @@ test('run lifecycle scripts of dependent packages after running scripts of their
 test('run prepare script for git-hosted dependencies', async () => {
   const project = prepareEmpty()
 
-  await addDependenciesToPackage({}, ['pnpm/test-git-fetch#8b333f12d5357f4f25a654c305c826294cb073bf'], testDefaults({ fastUnpack: false }))
+  await addDependenciesToPackage({}, ['pnpm/test-git-fetch#8b333f12d5357f4f25a654c305c826294cb073bf'], testDefaults({
+    fastUnpack: false,
+    onlyBuiltDependencies: ['test-git-fetch'],
+    neverBuiltDependencies: undefined,
+  }))
 
   const scripts = project.requireModule('test-git-fetch/output.json')
   expect(scripts).toStrictEqual([
@@ -320,6 +324,19 @@ test('run prepare script for git-hosted dependencies', async () => {
     'install',
     'postinstall',
   ])
+})
+
+test('do not run prepare script of a git-hosted dependency that is not in the allowlist', async () => {
+  const project = prepareEmpty()
+
+  // No build policy is configured, so lifecycle scripts of dependencies are
+  // disabled by default. A git-hosted dependency must not be able to bypass
+  // that by running its prepare script during the fetch phase.
+  await expect(
+    addDependenciesToPackage({}, ['pnpm/test-git-fetch#8b333f12d5357f4f25a654c305c826294cb073bf'], testDefaults({ fastUnpack: false }))
+  ).rejects.toThrow('needs to execute build scripts but is not in the "onlyBuiltDependencies" allowlist')
+
+  project.hasNot('test-git-fetch/output.json')
 })
 
 test('lifecycle scripts run before linking bins', async () => {

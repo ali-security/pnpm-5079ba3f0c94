@@ -8,6 +8,7 @@ import { type PatchGroupRecord } from '@pnpm/patching.config'
 import { type PreferredVersions, type Resolution, type WorkspacePackages } from '@pnpm/resolver-base'
 import { type StoreController } from '@pnpm/store-controller-types'
 import {
+  type AllowBuild,
   type SupportedArchitectures,
   type AllowedDeprecatedVersions,
   type PinnedVersion,
@@ -102,6 +103,7 @@ export interface ImporterToResolveGeneric<WantedDepExtraProps> extends Importer<
 }
 
 export interface ResolveDependenciesOptions {
+  allowBuild?: AllowBuild
   autoInstallPeers?: boolean
   autoInstallPeersFromHighestMatch?: boolean
   allowedDeprecatedVersions: AllowedDeprecatedVersions
@@ -138,6 +140,7 @@ export interface ResolveDependenciesOptions {
   peersSuffixMaxLength: number
   minimumReleaseAge?: number
   minimumReleaseAgeExclude?: string[]
+  blockExoticSubdeps?: boolean
 }
 
 export interface ResolveDependencyTreeResult {
@@ -160,6 +163,7 @@ export async function resolveDependencyTree<T> (
   const wantedToBeSkippedPackageIds = new Set<PkgResolutionId>()
   const autoInstallPeers = opts.autoInstallPeers === true
   const ctx: ResolutionContext = {
+    allowBuild: opts.allowBuild,
     autoInstallPeers,
     autoInstallPeersFromHighestMatch: opts.autoInstallPeersFromHighestMatch === true,
     allowedDeprecatedVersions: opts.allowedDeprecatedVersions,
@@ -200,6 +204,7 @@ export async function resolveDependencyTree<T> (
     allPeerDepNames: new Set(),
     maximumPublishedBy: opts.minimumReleaseAge ? new Date(Date.now() - opts.minimumReleaseAge * 60 * 1000) : undefined,
     publishedByExclude: opts.minimumReleaseAgeExclude ? createPublishedByExclude(opts.minimumReleaseAgeExclude) : undefined,
+    blockExoticSubdeps: opts.blockExoticSubdeps,
   }
 
   function createPublishedByExclude (patterns: string[]): PackageVersionPolicy {
