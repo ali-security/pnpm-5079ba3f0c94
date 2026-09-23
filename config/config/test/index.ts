@@ -1124,3 +1124,251 @@ test('when dangerouslyAllowAllBuilds is set to true and neverBuiltDependencies n
   expect(config.neverBuiltDependencies).toStrictEqual([])
   expect(warnings).toStrictEqual(['You have set dangerouslyAllowAllBuilds to true. The dependencies listed in neverBuiltDependencies will run their scripts.'])
 })
+
+describe('rescoping unscoped per-registry credentials at load time', () => {
+  // Reported by JUNYI LIU: a workspace .npmrc that overrides `registry=` to a
+  // different host than the user's ~/.npmrc would have set must not pull the
+  // user's unscoped credentials along. Each source's unscoped per-registry
+  // credentials are pinned to the source's own `registry=` (or npmjs default)
+  // at load time, so a later layer cannot rebind them.
+
+  // Isolate the maintainer's real ~/.config/pnpm/rc (which would otherwise be
+  // loaded by the pnpm-global addFile and leak its
+  // `//registry.npmjs.org/:_authToken` into our URL-scoped assertions).
+  let savedXdgConfigHome: string | undefined
+  let userconfig: string
+
+  beforeEach(() => {
+    prepare()
+    savedXdgConfigHome = process.env.XDG_CONFIG_HOME
+    const xdg = path.resolve('xdg-config')
+    fs.mkdirSync(path.join(xdg, 'pnpm'), { recursive: true })
+    process.env.XDG_CONFIG_HOME = xdg
+    userconfig = path.resolve('user-home', '.npmrc')
+    fs.mkdirSync(path.dirname(userconfig), { recursive: true })
+  })
+
+  afterEach(() => {
+    if (savedXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = savedXdgConfigHome
+    }
+  })
+
+  function writeUserConfig (contents: string): string {
+    fs.writeFileSync(userconfig, contents, 'utf8')
+    return userconfig
+  }
+
+  test('workspace .npmrc registry override cannot rebind user-level unscoped _authToken', async () => {
+    writeUserConfig([
+      'registry=https://trusted.example.test/',
+      '_authToken=USER_TRUSTED_TOKEN',
+    ].join('\n'))
+    fs.writeFileSync('.npmrc', 'registry=https://attacker.example.test/', 'utf8')
+
+    const { config } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    // The user-level token is pinned to its source's registry (trusted), not
+    // rebound to the workspace's attacker registry.
+    expect(config.rawConfig['//trusted.example.test/:_authToken']).toBe('USER_TRUSTED_TOKEN')
+    expect(config.rawConfig['//attacker.example.test/:_authToken']).toBeUndefined()
+    expect(config.rawConfig['_authToken']).toBeUndefined()
+    // The merged default registry still reflects the workspace override.
+    expect(config.rawConfig.registry).toBe('https://attacker.example.test/')
+  })
+
+  test('user-level unscoped _authToken with no source-level registry pins to npmjs default', async () => {
+    writeUserConfig('_authToken=USER_AMBIENT_TOKEN')
+    fs.writeFileSync('.npmrc', 'registry=https://attacker.example.test/', 'utf8')
+
+    const { config } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//registry.npmjs.org/:_authToken']).toBe('USER_AMBIENT_TOKEN')
+    expect(config.rawConfig['//attacker.example.test/:_authToken']).toBeUndefined()
+    expect(config.rawConfig['_authToken']).toBeUndefined()
+  })
+
+  test('cli --registry cannot pull along an unscoped user-level _authToken', async () => {
+    writeUserConfig('_authToken=USER_AMBIENT_TOKEN')
+
+    const { config } = await getConfig({
+      cliOptions: {
+        userconfig,
+        registry: 'https://attacker.example.test/',
+      },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//registry.npmjs.org/:_authToken']).toBe('USER_AMBIENT_TOKEN')
+    expect(config.rawConfig['//attacker.example.test/:_authToken']).toBeUndefined()
+    expect(config.rawConfig['_authToken']).toBeUndefined()
+  })
+
+  test('an unscoped credential passed on the command line pins to the cli registry', async () => {
+    writeUserConfig('registry=https://trusted.example.test/')
+
+    const { config } = await getConfig({
+      cliOptions: {
+        userconfig,
+        registry: 'https://cli.example.test/',
+        _authToken: 'CLI_TOKEN',
+      },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//cli.example.test/:_authToken']).toBe('CLI_TOKEN')
+    expect(config.rawConfig['//trusted.example.test/:_authToken']).toBeUndefined()
+    expect(config.rawConfig['_authToken']).toBeUndefined()
+  })
+
+  test('unscoped _auth, username and _password are all pinned to the source registry', async () => {
+    writeUserConfig([
+      'registry=https://trusted.example.test/',
+      '_auth=dXNlcjpwYXNz',
+      'username=alice',
+      '_password=cGFzcw==',
+    ].join('\n'))
+    fs.writeFileSync('.npmrc', 'registry=https://attacker.example.test/', 'utf8')
+
+    const { config } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//trusted.example.test/:_auth']).toBe('dXNlcjpwYXNz')
+    expect(config.rawConfig['//trusted.example.test/:username']).toBe('alice')
+    expect(config.rawConfig['//trusted.example.test/:_password']).toBe('cGFzcw==')
+    expect(config.rawConfig['//attacker.example.test/:_auth']).toBeUndefined()
+    expect(config.rawConfig['//attacker.example.test/:username']).toBeUndefined()
+    expect(config.rawConfig['//attacker.example.test/:_password']).toBeUndefined()
+    expect(config.rawConfig['_auth']).toBeUndefined()
+    expect(config.rawConfig['username']).toBeUndefined()
+    expect(config.rawConfig['_password']).toBeUndefined()
+  })
+
+  test('an unscoped tokenHelper is pinned to the source registry', async () => {
+    // A token helper is spawned by @pnpm/network.auth-header for whichever URI
+    // it is keyed under, so an unscoped one must never end up keyed to a
+    // registry a lower-trust source picked.
+    writeUserConfig([
+      'registry=https://trusted.example.test/',
+      'tokenHelper=TOKEN_HELPER_PATH',
+    ].join('\n'))
+    fs.writeFileSync('.npmrc', 'registry=https://attacker.example.test/', 'utf8')
+
+    const { config } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//trusted.example.test/:tokenHelper']).toBe('TOKEN_HELPER_PATH')
+    expect(config.rawConfig['//attacker.example.test/:tokenHelper']).toBeUndefined()
+    expect(config.rawConfig['tokenHelper']).toBeUndefined()
+    expect(config.userConfig['tokenHelper']).toBeUndefined()
+    expect(config.userConfig['//trusted.example.test/:tokenHelper']).toBe('TOKEN_HELPER_PATH')
+  })
+
+  test('url-scoped credentials pass through unchanged with no deprecation warning', async () => {
+    writeUserConfig('//trusted.example.test/:_authToken=URL_SCOPED')
+    fs.writeFileSync('.npmrc', 'registry=https://attacker.example.test/', 'utf8')
+
+    const { config, warnings } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//trusted.example.test/:_authToken']).toBe('URL_SCOPED')
+    expect(warnings).not.toContainEqual(expect.stringContaining('Unscoped per-registry settings'))
+  })
+
+  test('an explicit deprecation warning names the source and pinned registry', async () => {
+    writeUserConfig([
+      'registry=https://trusted.example.test/',
+      '_authToken=USER_TRUSTED_TOKEN',
+    ].join('\n'))
+
+    const { warnings } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(warnings).toContainEqual(expect.stringMatching(
+      /Unscoped per-registry settings \(_authToken\).*are deprecated.*pinned them to "\/\/trusted\.example\.test\/"/s
+    ))
+    // The warning names the source file that declared the unscoped setting.
+    expect(warnings).toContainEqual(expect.stringContaining(path.join('user-home', '.npmrc')))
+  })
+
+  test('explicit url-scoped key in the same source wins over the unscoped rescope', async () => {
+    writeUserConfig([
+      'registry=https://trusted.example.test/',
+      '_authToken=UNSCOPED',
+      '//trusted.example.test/:_authToken=EXPLICIT',
+    ].join('\n'))
+
+    const { config } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//trusted.example.test/:_authToken']).toBe('EXPLICIT')
+    expect(config.rawConfig['_authToken']).toBeUndefined()
+  })
+
+  test('inline cert and key are pinned to the source registry', async () => {
+    writeUserConfig([
+      'registry=https://trusted.example.test/',
+      'cert="-----BEGIN CERTIFICATE-----\\nFAKE\\n-----END CERTIFICATE-----"',
+      'key="-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----"',
+    ].join('\n'))
+    fs.writeFileSync('.npmrc', 'registry=https://attacker.example.test/', 'utf8')
+
+    const { config } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    expect(config.rawConfig['//trusted.example.test/:cert']).toBeDefined()
+    expect(config.rawConfig['//trusted.example.test/:key']).toBeDefined()
+    expect(config.rawConfig['//attacker.example.test/:cert']).toBeUndefined()
+    expect(config.rawConfig['//attacker.example.test/:key']).toBeUndefined()
+    expect(config.rawConfig['cert']).toBeUndefined()
+    expect(config.rawConfig['key']).toBeUndefined()
+    // The pinned client certificate is still handed to the TLS layer, but only
+    // for the registry that declared it.
+    expect(config.sslConfigs['//trusted.example.test/']).toStrictEqual({
+      cert: config.rawConfig['//trusted.example.test/:cert'],
+      key: config.rawConfig['//trusted.example.test/:key'],
+    })
+    expect(config.sslConfigs['//trusted.example.test/'].cert).toContain('BEGIN CERTIFICATE')
+    expect(config.sslConfigs['//trusted.example.test/'].key).toContain('BEGIN PRIVATE KEY')
+    expect(config.sslConfigs['//attacker.example.test/']).toBeUndefined()
+    expect(config.cert).toBeFalsy()
+    expect(config.key).toBeFalsy()
+  })
+
+  test('ca/cafile are intentionally not rescoped', async () => {
+    writeUserConfig([
+      'registry=https://trusted.example.test/',
+      `cafile=${path.join(__dirname, 'cafile.txt').split('\\').join('\\\\')}`,
+    ].join('\n'))
+
+    const { config, warnings } = await getConfig({
+      cliOptions: { userconfig },
+      packageManager: { name: 'pnpm', version: '1.0.0' },
+    })
+
+    // cafile should still be present globally — corporate MITM proxies
+    // depend on it applying to every HTTPS request.
+    expect(config.rawConfig['cafile']).toBeDefined()
+    expect(warnings).not.toContainEqual(expect.stringContaining('cafile'))
+  })
+})

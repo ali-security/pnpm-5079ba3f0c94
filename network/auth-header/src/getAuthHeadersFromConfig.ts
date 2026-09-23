@@ -1,4 +1,3 @@
-import { nerfDart } from '@pnpm/config.nerf-dart'
 import { PnpmError } from '@pnpm/error'
 import { spawnSync } from 'child_process'
 import fs from 'fs'
@@ -36,16 +35,13 @@ export function getAuthHeadersFromConfig (
       authHeaderValueByURI[uri] = loadToken(value, key)
     }
   }
-  const registry = allSettings['registry'] ? nerfDart(allSettings['registry']) : '//registry.npmjs.org/'
-  if (userSettings['tokenHelper']) {
-    authHeaderValueByURI[registry] = loadToken(userSettings['tokenHelper'], 'tokenHelper')
-  } else if (allSettings['_authToken']) {
-    authHeaderValueByURI[registry] = `Bearer ${allSettings['_authToken']}`
-  } else if (allSettings['_auth']) {
-    authHeaderValueByURI[registry] = `Basic ${allSettings['_auth']}`
-  } else if (allSettings['_password'] && allSettings['username']) {
-    authHeaderValueByURI[registry] = `Basic ${Buffer.from(`${allSettings['username']}:${allSettings['_password']}`).toString('base64')}`
-  }
+  // Unscoped per-registry credentials (`_authToken`, `_auth`,
+  // `username`/`_password`, `tokenHelper`) are deliberately NOT bound to the
+  // merged `registry` here. The merged `registry` can come from a different,
+  // lower-trust config source than the credential, which would send the
+  // credential to a host its author never named. `@pnpm/config` now pins every
+  // unscoped per-registry setting to the `registry=` declared in its own
+  // source at load time, so only URL-scoped keys ever reach this function.
   return authHeaderValueByURI
 }
 

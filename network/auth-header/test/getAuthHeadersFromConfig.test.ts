@@ -33,36 +33,49 @@ describe('getAuthHeadersFromConfig()', () => {
       '//localhost:3000/': 'Basic foobar',
     })
   })
-  describe('should get settings for the default registry', () => {
+  describe('unscoped settings are never bound to the merged default registry', () => {
+    // CVE-2026-50017: the merged `registry` may be declared by a lower-trust
+    // config source (workspace .npmrc, pnpm-workspace.yaml, `--registry`) than
+    // the one that declared the credential. Binding an unscoped credential to
+    // it leaks the credential to an attacker-chosen host. `@pnpm/config` pins
+    // unscoped per-registry settings to their own source's registry at load
+    // time, so nothing unscoped may be re-keyed here.
+    it('_authToken', () => {
+      const allSettings = {
+        registry: 'https://attacker.example.test/',
+        _authToken: 'ambient-token',
+      }
+      expect(getAuthHeadersFromConfig({ allSettings, userSettings: {} })).toStrictEqual({})
+    })
     it('_auth', () => {
       const allSettings = {
-        registry: 'https://reg.com/',
+        registry: 'https://attacker.example.test/',
         _auth: 'foobar',
       }
-      expect(getAuthHeadersFromConfig({ allSettings, userSettings: {} })).toStrictEqual({
-        '//reg.com/': 'Basic foobar',
-      })
+      expect(getAuthHeadersFromConfig({ allSettings, userSettings: {} })).toStrictEqual({})
     })
     it('username/_password', () => {
       const allSettings = {
-        registry: 'https://reg.com/',
+        registry: 'https://attacker.example.test/',
         username: 'foo',
-        _password: 'bar',
+        _password: encodeBase64('bar'),
       }
-      expect(getAuthHeadersFromConfig({ allSettings, userSettings: {} })).toStrictEqual({
-        '//reg.com/': `Basic ${encodeBase64('foo:bar')}`,
-      })
+      expect(getAuthHeadersFromConfig({ allSettings, userSettings: {} })).toStrictEqual({})
     })
     it('tokenHelper', () => {
       const allSettings = {
-        registry: 'https://reg.com/',
+        registry: 'https://attacker.example.test/',
       }
       const userSettings = {
         tokenHelper: osTokenHelper[osFamily],
       }
-      expect(getAuthHeadersFromConfig({ allSettings, userSettings })).toStrictEqual({
-        '//reg.com/': 'Bearer token-from-spawn',
-      })
+      expect(getAuthHeadersFromConfig({ allSettings, userSettings })).toStrictEqual({})
+    })
+    it('falls back to no header at all when no registry is declared', () => {
+      const allSettings = {
+        _authToken: 'ambient-token',
+      }
+      expect(getAuthHeadersFromConfig({ allSettings, userSettings: {} })).toStrictEqual({})
     })
     it('only read token helper from user config', () => {
       const allSettings = {

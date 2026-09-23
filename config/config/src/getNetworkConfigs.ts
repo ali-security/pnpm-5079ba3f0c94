@@ -27,6 +27,20 @@ export function getNetworkConfigs (rawConfig: Record<string, object>): GetNetwor
       } else if (configKey.includes(':cafile')) {
         sslConfigs[registry].ca = fs.readFileSync(value as unknown as string, 'utf8')
       }
+    } else if (configKey.startsWith('//') && (configKey.endsWith('/:cert') || configKey.endsWith('/:key'))) {
+      // Inline PEM variants of the client certificate settings. Unscoped
+      // `cert`/`key` are pinned to their source's registry at load time (see
+      // rescopeUnscopedCreds), which turns them into these URL-scoped keys,
+      // so they have to be read back here to still reach the TLS layer.
+      const registry = configKey.split('/:')[0] + '/'
+      if (!sslConfigs[registry]) {
+        sslConfigs[registry] = { cert: '', key: '' }
+      }
+      if (configKey.endsWith('/:cert')) {
+        sslConfigs[registry].cert = value as unknown as string
+      } else {
+        sslConfigs[registry].key = value as unknown as string
+      }
     }
   }
   return {
