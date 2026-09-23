@@ -130,7 +130,7 @@ async function downloadWithIntegrityCheck (
  * @param zipPath - Path to the zip file
  * @param basename - Base name of the file (without extension)
  * @param targetDir - Directory where contents should be extracted
- * @throws {PnpmError} When extraction fails
+ * @throws {PnpmError} When extraction fails or path traversal is detected
  */
 async function extractZipToTarget (
   zipPath: string,
@@ -139,8 +139,55 @@ async function extractZipToTarget (
 ): Promise<void> {
   const zip = new AdmZip(zipPath)
   const nodeDir = basename === '' ? targetDir : path.dirname(targetDir)
-  const extractedDir = path.join(nodeDir, basename)
 
-  zip.extractAllTo(nodeDir, true)
+  // Validate basename/prefix doesn't escape the target directory
+  if (basename !== '') {
+    validatePathSecurity(nodeDir, basename)
+  }
+
+  // Extract each entry with path validation to prevent path traversal attacks
+  for (const entry of zip.getEntries()) {
+    const entryPath = entry.entryName
+    validatePathSecurity(nodeDir, entryPath)
+    zip.extractEntryTo(entry, nodeDir, true, true)
+  }
+
+  const extractedDir = path.join(nodeDir, basename)
   await renameOverwrite(extractedDir, targetDir)
+}
+
+/**
+ * Validates that a path does not escape the base directory via path traversal.
+ *
+ * @param basePath - The base directory that should contain the target
+ * @param targetPath - The relative path to validate
+ * @throws {PnpmError} When path traversal is detected
+ */
+function validatePathSecurity (basePath: string, targetPath: string): void {
+  // Explicitly reject absolute paths - they should never be allowed as prefixes or entry names
+  if (path.isAbsolute(targetPath)) {
+    throw new PnpmError('PATH_TRAVERSAL',
+      `Refusing to extract path "${targetPath}" - absolute paths are not allowed`)
+  }
+  const normalizedTarget = path.resolve(basePath, targetPath)
+  if (!isSubdir(basePath, normalizedTarget) && normalizedTarget !== basePath) {
+    throw new PnpmError('PATH_TRAVERSAL',
+      `Refusing to extract path "${targetPath}" outside of target directory`)
+  }
+}
+
+/**
+ * Tells whether `dir` is located inside `parentDir`.
+ *
+ * This is an inlined equivalent of the `is-subdir` package. It relies on
+ * `path` only, so on Windows both `/` and `\` are treated as separators and
+ * backslash-based traversal is detected just like slash-based traversal.
+ */
+function isSubdir (parentDir: string, dir: string): boolean {
+  const relative = path.relative(parentDir, dir)
+  if (relative === '') return false // `dir` is `parentDir` itself, not a subdirectory of it
+  // `relative` may only escape `parentDir` when it is exactly ".." or starts
+  // with a ".." path segment. A name such as "..foo" stays inside.
+  if (relative === '..' || relative.startsWith(`..${path.sep}`)) return false
+  return !path.isAbsolute(relative)
 }
