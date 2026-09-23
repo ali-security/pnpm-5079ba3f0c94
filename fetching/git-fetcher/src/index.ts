@@ -10,6 +10,15 @@ import rimraf from '@zkochan/rimraf'
 import execa from 'execa'
 import { URL } from 'url'
 
+// @pnpm/error is not a dependency of this package, so the PnpmError shape
+// (a `code` prefixed with ERR_PNPM_) is reproduced locally.
+class InvalidGitCommitError extends Error {
+  public readonly code = 'ERR_PNPM_INVALID_GIT_COMMIT'
+  constructor (commit: string, repo: string) {
+    super(`Invalid git commit hash "${commit}" for repository "${repo}". Expected a 40-character hexadecimal SHA.`)
+  }
+}
+
 export interface CreateGitFetcherOptions {
   gitShallowHosts?: string[]
   rawConfig: Record<string, unknown>
@@ -22,6 +31,9 @@ export function createGitFetcher (createOpts: CreateGitFetcherOptions): { git: G
   const ignoreScripts = createOpts.ignoreScripts ?? false
 
   const gitFetcher: GitFetcher = async (cafs, resolution, opts) => {
+    if (!isValidCommitHash(resolution.commit)) {
+      throw new InvalidGitCommitError(resolution.commit, resolution.repo)
+    }
     const tempLocation = await cafs.tempDir()
     if (allowedHosts.size > 0 && shouldUseShallow(resolution.repo, allowedHosts)) {
       await execGit(['init'], { cwd: tempLocation })
@@ -67,6 +79,10 @@ export function createGitFetcher (createOpts: CreateGitFetcherOptions): { git: G
   return {
     git: gitFetcher,
   }
+}
+
+function isValidCommitHash (commit: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(commit)
 }
 
 function shouldUseShallow (repoUrl: string, allowedHosts: Set<string>): boolean {

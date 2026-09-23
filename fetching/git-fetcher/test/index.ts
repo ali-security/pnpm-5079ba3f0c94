@@ -210,6 +210,38 @@ test('fail when preparing a git-hosted package', async () => {
   ).rejects.toThrow('Failed to prepare git-hosted package fetched from "https://github.com/pnpm-e2e/prepare-script-fails.git": @pnpm.e2e/prepare-script-fails@1.0.0 npm-install: `npm install`')
 })
 
+test('reject a partial commit before invoking git', async () => {
+  const storeDir = tempy.directory()
+  const fetch = createGitFetcher({ rawConfig: {} }).git
+  await expect(
+    fetch(createCafsStore(storeDir),
+      {
+        commit: 'deadbeef',
+        repo: 'https://github.com/pnpm-e2e/prepare-script-fails.git',
+        type: 'git',
+      }, {
+        filesIndexFile: path.join(storeDir, 'index.json'),
+      })
+  ).rejects.toThrow('Invalid git commit hash "deadbeef"')
+  expect(jest.mocked(execa)).not.toHaveBeenCalled()
+})
+
+test('reject a commit value that looks like a git option', async () => {
+  const storeDir = tempy.directory()
+  const fetch = createGitFetcher({ rawConfig: {} }).git
+  await expect(
+    fetch(createCafsStore(storeDir),
+      {
+        commit: '--upload-pack=touch /tmp/pwned',
+        repo: 'file:///tmp/repo.git',
+        type: 'git',
+      }, {
+        filesIndexFile: path.join(storeDir, 'index.json'),
+      })
+  ).rejects.toThrow('Invalid git commit hash "--upload-pack=touch /tmp/pwned"')
+  expect(jest.mocked(execa)).not.toHaveBeenCalled()
+})
+
 test('do not build the package when scripts are ignored', async () => {
   const storeDir = tempy.directory()
   const fetch = createGitFetcher({ ignoreScripts: true, rawConfig: {} }).git
