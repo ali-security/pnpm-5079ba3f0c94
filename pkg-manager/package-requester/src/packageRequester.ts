@@ -177,7 +177,7 @@ async function resolveAndFetch (
   let alias: string | undefined
   let resolution = options.currentPkg?.resolution as Resolution
   let pkgId = options.currentPkg?.id
-  const skipResolution = resolution && !options.update
+  const skipResolution = resolution && !options.update && !options.updateChecksums
   let forceFetch = false
   let updated = false
   let resolvedVia: string | undefined
@@ -218,6 +218,7 @@ async function resolveAndFetch (
       projectDir: options.projectDir,
       workspacePackages: options.workspacePackages,
       update: options.update,
+      updateChecksums: options.updateChecksums,
       injectWorkspacePackages: options.injectWorkspacePackages,
       calcSpecifier: options.calcSpecifier,
       pinnedVersion: options.pinnedVersion,
