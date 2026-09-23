@@ -64,6 +64,12 @@ export interface StoreController {
 export interface PkgRequestFetchResult {
   bundledManifest?: BundledManifest
   files: PackageFilesResponse
+  /**
+   * The SRI of the tarball the package was downloaded from. Only set when the
+   * package was actually downloaded during this install; a package served from
+   * the store keeps whatever integrity the lockfile already recorded for it.
+   */
+  tarballIntegrity?: string
 }
 
 export interface FetchResponse {

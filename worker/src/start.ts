@@ -165,7 +165,20 @@ function addTarballToStore ({ buffer, storeDir, integrity, filesIndexFile }: Tar
   const { filesIndex, manifest } = cafs.addFilesFromTarball(buffer, true)
   const { filesIntegrity, filesMap } = processFilesIndex(filesIndex)
   const requiresBuild = writeFilesIndexFile(filesIndexFile, { manifest: manifest ?? {}, files: filesIntegrity })
-  return { status: 'success', value: { filesIndex: filesMap, manifest, requiresBuild } }
+  return {
+    status: 'success',
+    value: {
+      filesIndex: filesMap,
+      manifest,
+      requiresBuild,
+      // The SRI of the tarball that was just extracted. When the caller
+      // supplied one it was verified above, so it is returned as is. Tarballs
+      // fetched from a git host don't come with a checksum, so the one
+      // calculated here is what gets pinned in the lockfile — later installs
+      // pass it back in and the check above rejects a substituted tarball.
+      integrity: integrity ?? `sha512-${crypto.hash('sha512', buffer, 'base64')}`,
+    },
+  }
 }
 
 interface AddFilesFromDirResult {

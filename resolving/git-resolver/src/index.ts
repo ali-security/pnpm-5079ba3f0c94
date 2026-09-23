@@ -41,7 +41,7 @@ export function createGitResolver (
       const tarball = hosted.tarball?.()
 
       if (tarball) {
-        resolution = { tarball }
+        resolution = { tarball, gitHosted: true }
       }
     }
 

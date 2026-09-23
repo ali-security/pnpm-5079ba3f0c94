@@ -316,8 +316,22 @@ async function resolveAndFetch (
     supportedArchitectures: options.supportedArchitectures,
   })
 
-  if (!manifest) {
-    manifest = (await fetchResult.fetching()).bundledManifest
+  // A git host generates the tarball on the fly and publishes no checksum for
+  // it, so the only moment its integrity can be learned is right after the
+  // download. Pinning it on the resolution puts it in the lockfile, and every
+  // later install sends it back down to the fetcher, which rejects a tarball
+  // that doesn't match it.
+  const isGitHostedWithoutIntegrity = (resolution as TarballResolution).gitHosted === true &&
+    !(resolution as TarballResolution).integrity
+  if (!manifest || isGitHostedWithoutIntegrity) {
+    const fetched = await fetchResult.fetching()
+    manifest = manifest ?? fetched.bundledManifest
+    if (isGitHostedWithoutIntegrity && fetched.tarballIntegrity != null) {
+      resolution = {
+        ...resolution,
+        integrity: fetched.tarballIntegrity,
+      } as Resolution
+    }
   }
   return {
     body: {
@@ -360,25 +374,27 @@ function getFilesIndexFilePath (
 ): GetFilesIndexFilePathResult {
   const targetRelative = depPathToFilename(opts.pkg.id, ctx.virtualStoreDirMaxLength)
   const target = path.join(ctx.storeDir, targetRelative)
-  if ((opts.pkg.resolution as TarballResolution).integrity) {
-    return {
-      target,
-      filesIndexFile: ctx.getIndexFilePathInCafs((opts.pkg.resolution as TarballResolution).integrity!, opts.pkg.id),
-      resolution: opts.pkg.resolution as AtomicResolution,
-    }
-  }
-  let resolution!: AtomicResolution
+  let resolution: AtomicResolution
   if (opts.pkg.resolution.type === 'variations') {
     resolution = findResolution(opts.pkg.resolution.variants, opts.supportedArchitectures)
-    if ((resolution as TarballResolution).integrity) {
-      return {
-        target,
-        filesIndexFile: ctx.getIndexFilePathInCafs((resolution as TarballResolution).integrity!, opts.pkg.id),
-        resolution,
-      }
-    }
   } else {
-    resolution = opts.pkg.resolution
+    resolution = opts.pkg.resolution as AtomicResolution
+  }
+  // Git-hosted tarballs are post-processed (preparePackage / packlist) on
+  // extraction, and their cached content depends on whether build scripts
+  // ran, so they must stay on the per-package store path keyed by built/
+  // not-built — never on the integrity-based cafs key, even though
+  // integrity is now pinned in the lockfile for tamper detection.
+  if ((resolution as TarballResolution).gitHosted === true) {
+    const filesIndexFile = path.join(target, opts.ignoreScripts ? 'integrity-not-built.json' : 'integrity.json')
+    return { filesIndexFile, target, resolution }
+  }
+  if ((resolution as TarballResolution).integrity) {
+    return {
+      target,
+      filesIndexFile: ctx.getIndexFilePathInCafs((resolution as TarballResolution).integrity!, opts.pkg.id),
+      resolution,
+    }
   }
   const filesIndexFile = path.join(target, opts.ignoreScripts ? 'integrity-not-built.json' : 'integrity.json')
   return { filesIndexFile, target, resolution }
@@ -499,21 +515,24 @@ function fetchToStore (
 
   if (opts.fetchRawManifest && !result.fetchRawManifest) {
     result.fetching = removeKeyOnFail(
-      result.fetching.then(async ({ files }) => {
+      // The rest of the fetch result is spread through, so fields such as
+      // tarballIntegrity survive the addition of the bundled manifest.
+      result.fetching.then(async (fetchResult) => {
+        const { files } = fetchResult
         if (!files.filesIndex['package.json']) return {
-          files,
+          ...fetchResult,
           bundledManifest: undefined,
         }
         if (files.unprocessed) {
           const { integrity, mode } = files.filesIndex['package.json']
           const manifestPath = ctx.getFilePathByModeInCafs(integrity, mode)
           return {
-            files,
+            ...fetchResult,
             bundledManifest: await readBundledManifest(manifestPath),
           }
         }
         return {
-          files,
+          ...fetchResult,
           bundledManifest: await readBundledManifest(files.filesIndex['package.json']),
         }
       })
@@ -658,6 +677,10 @@ Actual package in the store with the given integrity: ${pkgFilesIndex.name}@${pk
           requiresBuild: fetchedPackage.requiresBuild,
         },
         bundledManifest: fetchedPackage.manifest == null ? fetchedPackage.manifest : normalizeBundledManifest(fetchedPackage.manifest),
+        // Only set when the package was downloaded now. It lets the caller pin
+        // the checksum of a git-hosted tarball, which no resolver can know
+        // upfront, in the lockfile.
+        tarballIntegrity: fetchedPackage.integrity,
       })
     } catch (err: any) { // eslint-disable-line
       fetching.reject(err)

@@ -33,6 +33,13 @@ export interface FetchResult {
   manifest?: DependencyManifest
   filesIndex: Record<string, string>
   requiresBuild: boolean
+  /**
+   * The SRI of the tarball the package was fetched from, when it was fetched
+   * from one. Git hosts don't publish a checksum for the tarballs they
+   * generate, so calculating it while downloading is the only way to obtain
+   * one and pin it in the lockfile.
+   */
+  integrity?: string
 }
 
 export interface GitFetcherOptions {

@@ -71,6 +71,13 @@ interface AddFilesResult {
   filesIndex: Record<string, string>
   manifest: DependencyManifest
   requiresBuild: boolean
+  /**
+   * The SRI of the tarball the files were read from. Only set when the files
+   * came from a tarball. It is the checksum that was verified when the caller
+   * supplied one, and the checksum calculated from the downloaded bytes when
+   * it didn't — which is how git-hosted tarballs get an integrity to pin.
+   */
+  integrity?: string
 }
 
 type AddFilesFromDirOptions = Pick<AddDirToStoreMessage, 'storeDir' | 'dir' | 'filesIndexFile' | 'sideEffectsCacheKey' | 'readManifest' | 'pkg' | 'files'>
@@ -145,7 +152,7 @@ export async function addFilesFromTarball (opts: AddFilesFromTarballOptions): Pr
     workerPool = createTarballWorkerPool()
   }
   const localWorker = await workerPool.checkoutWorkerAsync(true)
-  return new Promise<{ filesIndex: Record<string, string>, manifest: DependencyManifest, requiresBuild: boolean }>((resolve, reject) => {
+  return new Promise<AddFilesResult>((resolve, reject) => {
     localWorker.once('message', ({ status, error, value }) => {
       workerPool!.checkinWorker(localWorker)
       if (status === 'error') {

@@ -5,7 +5,7 @@ import {
   type PackageSnapshot,
   pruneSharedLockfile,
 } from '@pnpm/lockfile.pruner'
-import { type Resolution } from '@pnpm/resolver-base'
+import { type Resolution, type TarballResolution } from '@pnpm/resolver-base'
 import { type DepPath, type Registries } from '@pnpm/types'
 import * as dp from '@pnpm/dependency-path'
 import getNpmTarballUrl from 'get-npm-tarball-url'
@@ -177,7 +177,7 @@ function updateResolvedDeps (
   )
 }
 
-function toLockfileResolution (
+export function toLockfileResolution (
   pkg: {
     name: string
     version: string
@@ -189,11 +189,27 @@ function toLockfileResolution (
   if (resolution.type !== undefined || !resolution['integrity']) {
     return resolution as LockfileResolution
   }
+  const tarball = resolution['tarball'] as string | undefined
+  // Honor the resolver-supplied flag, with a URL fallback for resolutions
+  // that didn't go through the git resolver (e.g. legacy lockfiles read by
+  // callers that don't enrich the field).
+  const gitHosted = (resolution as TarballResolution).gitHosted === true ||
+    (tarball != null && isGitHostedTarballUrl(tarball))
   if (lockfileIncludeTarballUrl) {
-    return {
+    return preservingGitHosted({
       integrity: resolution['integrity'],
-      tarball: resolution['tarball'],
-    }
+      tarball,
+    }, gitHosted, (resolution as TarballResolution).path)
+  }
+  // Tarball URLs that cannot be reconstructed from the package name, version,
+  // and registry must always stay in the lockfile, otherwise the package can
+  // no longer be re-fetched. This covers tarballs served by git providers
+  // (GitHub, GitLab, Bitbucket).
+  if (tarball != null && gitHosted) {
+    return preservingGitHosted({
+      integrity: resolution['integrity'],
+      tarball,
+    }, gitHosted, (resolution as TarballResolution).path)
   }
   // Sometimes packages are hosted under non-standard tarball URLs.
   // For instance, when they are hosted on npm Enterprise. See https://github.com/pnpm/pnpm/issues/867
@@ -209,6 +225,45 @@ function toLockfileResolution (
   return {
     integrity: resolution['integrity'],
   }
+}
+
+interface KeptTarballResolution {
+  integrity: string
+  tarball?: string
+  gitHosted?: boolean
+  path?: string
+}
+
+function preservingGitHosted (
+  resolution: { tarball?: string, integrity: string },
+  gitHosted: boolean,
+  // The subdirectory to extract from a git-hosted monorepo tarball
+  // (`repo#commit&path:/sub/dir`). Before the integrity of git-hosted
+  // tarballs was pinned, such resolutions were copied into the lockfile
+  // verbatim; now that they take the kept-URL branch, the path has to be
+  // carried over explicitly, otherwise later installs silently unpack the
+  // repository root. See https://github.com/pnpm/pnpm/issues/12304.
+  path?: string
+): KeptTarballResolution {
+  const result: KeptTarballResolution = { ...resolution }
+  if (gitHosted) {
+    result.gitHosted = true
+  }
+  if (path != null) {
+    result.path = path
+  }
+  return result
+}
+
+// Inlined to avoid pulling @pnpm/pick-fetcher into this dep graph.
+// Used as a fallback when callers haven't pre-set the `gitHosted` field
+// on TarballResolution.
+function isGitHostedTarballUrl (url: string): boolean {
+  return (
+    url.startsWith('https://codeload.github.com/') ||
+    url.startsWith('https://bitbucket.org/') ||
+    url.startsWith('https://gitlab.com/')
+  ) && url.includes('tar.gz')
 }
 
 function removeProtocol (url: string): string {
